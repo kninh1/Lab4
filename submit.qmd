@@ -1,28 +1,251 @@
 ---
-title: ""
-author: ""
+title: "Lab 4"
+author: "Katrina Ninh"
 format:
   html:
     embed-resources: true
 ---
 
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
-
 ```{r}
-1 + 1
+## 1. Read in the data
+if (!file.exists("met_all.gz"))
+  download.file(
+    url = "https://raw.githubusercontent.com/USCbiostats/data-science-data/master/02_met/met_all.gz",
+    destfile = "met_all.gz",
+    method   = "libcurl",
+    timeout  = 60
+    )
+met <- data.table::fread("met_all.gz")
+
+library(data.table)
+
+## 2. Prepare the data
+## remove temperatures less than -17
+met<- met[temp >= -17]
+
+## remove missing data
+key_vars <- c("temp", "rh", "wind.sp", "vis.dist", "dew.point", "elev")
+met[, (key_vars) := lapply(.SD, function(x) ifelse(x %in% c(9999, 999, NA), NA, x)), .SDcols = key_vars]
+
+## generate a date variable
+met[, date := as.Date(paste(year, month, day, sep = "-"))]
+
+## keep observations of the first week of the month
+met[, table(week(date))]
+met <- met[week(date)==31]
+
+## compute mean by station
+met[, c("mean_temp", "mean_rh", "mean_wind.sp", "mean_vis.dist", "mean_dew.point", "mean_lat", "mean_lon", "mean_elev") := .(
+  mean(temp, na.rm = TRUE),
+  mean(rh, na.rm = TRUE),
+  mean(wind.sp, na.rm = TRUE),
+  mean(vis.dist, na.rm = TRUE),
+  mean(dew.point, na.rm = TRUE),
+  mean(lat, na.rm = TRUE),
+  mean(lon, na.rm = TRUE),
+  mean(elev, na.rm = TRUE)
+), by = c("USAFID", "day")]
+
+## Create a region variable based on lon and lat
+met[, region := ifelse(lon <= -98.00 & lat >= 39.71, "NW",
+                       ifelse(lon <= -98.00 & lat < 39.71, "SW",
+                              ifelse(lon > -98.00 & lat >= 39.71, "NE", "SE")))]
+
+## Create a categorical variable for elevation
+met[, elev_cat := cut(elev, breaks = c(-Inf, 1000, 2000, 3000, Inf),
+                      labels = c("Low", "Medium", "High", "Very High"))]
+                       
+## 3. Examine wind speed and dew point by region
+
+library(ggplot2)
+library (dplyr)
+
+## filter out rows with NAs
+met_filtered <- met[!is.na(wind.sp) & !is.na(dew.point)]
+
+## Create a violin plot for wind speed by region
+wind_speed_plot <- ggplot(met_filtered, aes(x = "1", y = wind.sp, fill = region)) +
+  geom_violin(trim = FALSE, scale = "width") +
+  labs(x = NULL, y = "Wind Speed") +
+  facet_wrap(~region) +
+  theme_minimal()
+
+## Create a violin plot for dew point by region
+dew_point_plot <- ggplot(met_filtered, aes(x = "1", y = dew.point, fill = region)) +
+  geom_violin(trim = FALSE, scale = "width") +
+  labs(x = NULL, y = "Dew Point") +
+  facet_wrap(~region) +
+  theme_minimal()
+
+## Plot wind speed and dew point side by side
+library(gridExtra)
+grid.arrange(wind_speed_plot, dew_point_plot, ncol = 2)
+
+## describe your observations
+## wind speed is higher in NW and SW; Dew point is highest in SE and lowest in SW
+
+
+## 4. Association between dew point and wind speed
+
+## Create a scatter plot with jitter and linear regression lines
+scatter_plot <- ggplot(met_filtered, aes(x = dew.point, y = wind.sp, color = region)) +
+  geom_jitter(width = 0.2, height = 0.2) +  # Jittered points
+  stat_smooth(method = "lm", se = FALSE, aes(group = region)) +  # Linear regression line
+  labs(x = "Dew Point", y = "Wind Speed") +
+  theme_minimal()
+
+## Plot the scatter plot
+scatter_plot
+
+## Describe plot
+## NE and SE have a positive association between dew point and wind speed
+
+
+## 5. Create barplots of weather stations by elevation categories
+
+# Filter out rows with NAs in the elevation category
+elev_filtered <- met[!is.na(elev_cat)]
+
+# Create a barplot using geom_bar
+bar_plot <- ggplot(elev_filtered, aes(x = elev_cat, fill = region)) +
+  geom_bar(position = "dodge") +  # Bars by elevation category using dodge positioning
+  scale_fill_brewer(palette = "Set1") +  # Color by region using Brewer palette
+  labs(x = "Elevation Category", y = "Count", fill = "Region") +  # Axis labels and legend title
+  theme_minimal() +  # Minimal theme
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels
+  ggtitle("Weather Stations by Elevation Category and Region")  # Title
+
+# Plot the barplot
+bar_plot
+
+# Describe your observations based on the generated plot
+## NE and SE have low weather elevations
+## NW and SW have medium to very high elevations
+
+## 6. Examine mean dew point and wind speed
+
+## Create a plot using stat_summary for mean and standard deviation
+
+## dew point
+summary_plot <- ggplot(met_filtered, aes(x = region, y = dew.point)) +
+  stat_summary(
+    fun.data = "mean_sdl",  # Calculate mean and standard deviation
+    mult = 1,  # Scale factor for standard deviation
+    geom = "errorbar",  # Use error bars
+    width = 0.2,  # Width of error bars
+    position = position_dodge(width = 0.8)  # Dodge positioning for grouped bars
+  ) +
+  stat_summary(
+    fun.data = "mean_sdl",  # Calculate mean and standard deviation
+    mult = 1,  # Scale factor for standard deviation
+    geom = "point",  # Use points to represent means
+    size = 3,  # Size of points
+    position = position_dodge(width = 0.8)  # Dodge positioning for grouped points
+  ) +
+  labs(x = "Region", y = "Dew Point", fill = NULL) +  # Axis labels
+  theme_minimal() +  # Minimal theme
+  ggtitle("Mean Dew Point by Region")  # Title
+
+## Plot the summary plot for dew point
+summary_plot
+
+## Wind speed
+summary_plot <- ggplot(met_filtered, aes(x = region, y = wind.sp)) +
+  stat_summary(
+    fun.data = "mean_sdl",  # Calculate mean and standard deviation
+    mult = 1,  # Scale factor for standard deviation
+    geom = "errorbar",  # Use error bars
+    width = 0.2,  # Width of error bars
+    position = position_dodge(width = 0.8)  # Dodge positioning for grouped bars
+  ) +
+  stat_summary(
+    fun.data = "mean_sdl",  # Calculate mean and standard deviation
+    mult = 1,  # Scale factor for standard deviation
+    geom = "point",  # Use points to represent means
+    size = 3,  # Size of points
+    position = position_dodge(width = 0.8)  # Dodge positioning for grouped points
+  ) +
+  labs(x = "Region", y = "Wind Speed", fill = NULL) +  # Axis labels
+  theme_minimal() +  # Minimal theme
+  ggtitle("Mean Wind Speed by Region")  # Title
+
+## Plot the summary plot for wind speed
+summary_plot
+
+## Describe your observations based on the generated plots
+
+## Dew point is
+## NE 16, NW 13, SE 21, SW 13
+
+## Wind speed is
+## NE 1.5, NW 2.6, SE 1.5, SW 2.7
+
+# Load the necessary libraries
+library(leaflet)
+library(dplyr)
+
+# Step 7: Create a map showing spatial trend in relative humidity
+
+# Filter out rows with NAs in relative humidity (rh)
+met_filtered<- met[,.(rh=mean(rh,na.rm=TRUE), lat=mean(lat), lon=mean(lon))]
+met_filtered <- met[!is.na(met$rh)]
+
+# Define a custom color palette for relative humidity
+rh_palette <- colorNumeric(
+  palette = c("lightblue", "blue", "green", "yellow", "red"),
+  domain = met_filtered$rh
+)
+
+# Create a leaflet map
+# Step 7: Create a map showing spatial trend in relative humidity
+
+# Filter out rows with NAs in relative humidity (rh)
+met_filtered <- met[!is.na(met$rh)]
+
+# Define a custom color palette for relative humidity
+rh_palette <- colorNumeric(
+  palette = c("lightblue", "blue", "green", "yellow", "red"),
+  domain = met_filtered$rh
+)
+
+# Create a leaflet map
+rh_map<-leaflet(met_filtered) %>%
+  addProviderTiles('CartoDB.Positron') %>%
+  addCircleMarkers(
+    lat = ~lat, lng=~lon,
+    label = ~paste0(round(rh,2), ' C'), color = ~ rh_palette(rh),
+    opacity = 1, fillOpacity = 1, radius = 0.5) %>%
+  addMarkers(
+    lng = met_filtered$lon[rank(-met_filtered$rh) <= 10],
+    lat = met_filtered$lat[rank(-met_filtered$rh) <= 10],
+     label = ~paste("RH:", round(rh, 2)),
+             labelOptions = labelOptions(noHide = TRUE, textOnly = TRUE)) %>%
+  addLegend('bottomright', pal=rh_palette, values=met_filtered$rh,
+          title='Relative Humidity', opacity=1)
+#display map
+rh_map
+
+# Describe the trend in relative humidity across the US
+
+# Describe the trend in relative humidity across the US
+##humidity is the higher on the east coast and lower on the west coast
+
+
+
+##install.packages('gganimate')
+library(gganimate)
+##install.packages("gifski")
+library(gifski)
+
+
+ggplot(met_filtered, aes(x = elev, y = wind.sp)) +
+  geom_boxplot() +
+  transition_states(
+  elev,
+  transition_length = 1,
+  state_length = 1
+  ) +
+  enter_fade() +
+  exit_fade()
+
 ```
-
-You can add options to executable code like this
-
-```{r}
-#| echo: false
-2 * 2
-```
-
-The `echo: false` option disables the printing of code (only output is displayed).
